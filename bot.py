@@ -14,29 +14,32 @@ from pathlib import Path
 
 import aiohttp
 from telethon import TelegramClient, events
+from telethon.sessions import StringSession
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes, ConversationHandler,
 )
 
-# ── Read environment variables (Railway sets these automatically) ─────────────
-API_ID        = int(os.environ.get("API_ID", 0))
-API_HASH      = os.environ.get("API_HASH", "")
-PHONE_NUMBER  = os.environ.get("PHONE_NUMBER", "")
-BOT_TOKEN     = os.environ.get("BOT_TOKEN", "")
-ADMIN_ID      = int(os.environ.get("ADMIN_ID", 0))
-CONFIG_FILE   = Path("config.json")
+# ── Read environment variables ────────────────────────────────────────────────
+API_ID         = int(os.environ.get("API_ID", 0))
+API_HASH       = os.environ.get("API_HASH", "")
+BOT_TOKEN      = os.environ.get("BOT_TOKEN", "")
+ADMIN_ID       = int(os.environ.get("ADMIN_ID", 0))
+SESSION_STRING = os.environ.get("SESSION_STRING", "")
+CONFIG_FILE    = Path("config.json")
 
-# ── Validate before starting ──────────────────────────────────────────────────
+# ── Validate ──────────────────────────────────────────────────────────────────
 missing = [k for k, v in {
-    "API_ID": API_ID, "API_HASH": API_HASH,
-    "PHONE_NUMBER": PHONE_NUMBER, "BOT_TOKEN": BOT_TOKEN, "ADMIN_ID": ADMIN_ID
+    "API_ID": API_ID,
+    "API_HASH": API_HASH,
+    "BOT_TOKEN": BOT_TOKEN,
+    "ADMIN_ID": ADMIN_ID,
+    "SESSION_STRING": SESSION_STRING,
 }.items() if not v]
 
 if missing:
-    raise SystemExit(f"❌ Missing environment variables: {', '.join(missing)}\n"
-                     f"Go to Railway → Variables tab and add them.")
+    raise SystemExit(f"❌ Missing environment variables: {', '.join(missing)}")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -96,13 +99,15 @@ def passes_filter(text: str, pair: dict) -> bool:
         return True
     return any(kw in text.lower() for kw in kws)
 
-# ── Telethon user client ──────────────────────────────────────────────────────
-user_client = TelegramClient("user_session", API_ID, API_HASH)
+# ── Telethon user client (uses StringSession — no login prompt!) ──────────────
+user_client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 async def start_user_client():
-    await user_client.start(phone=PHONE_NUMBER)
+    await user_client.connect()
+    if not await user_client.is_user_authorized():
+        raise SystemExit("❌ Session string is invalid or expired. Generate a new one.")
     me = await user_client.get_me()
-    log.info("✅ Userbot logged in as %s", me.first_name)
+    log.info("✅ Userbot logged in as %s (@%s)", me.first_name, me.username)
 
 # ── Forward handler ───────────────────────────────────────────────────────────
 async def handle_new_message(event):
