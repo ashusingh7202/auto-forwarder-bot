@@ -3,20 +3,6 @@
 ║       FREE UNLIMITED TELEGRAM AUTO FORWARDER         ║
 ║   No follower limit · No restrictions · 100% Free   ║
 ╚══════════════════════════════════════════════════════╝
-
-Architecture:
-  • Uses YOUR Telegram USER account (Telethon) to read any channel
-  • Uses a BOT TOKEN to manage settings via chat commands
-  • Supports unlimited source→destination pairs
-  • Optional affiliate link rewriting
-  • Keyword/hashtag filters
-  • Forward delay, caption editing, media support
-
-Install:
-    pip install telethon python-telegram-bot aiohttp python-dotenv
-
-Run:
-    python bot.py
 """
 
 import asyncio
@@ -27,24 +13,30 @@ import re
 from pathlib import Path
 
 import aiohttp
-from dotenv import load_dotenv
 from telethon import TelegramClient, events
-from telethon.tl.functions.channels import GetFullChannelRequest
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     MessageHandler, filters, ContextTypes, ConversationHandler,
 )
 
-# ── Load env ──────────────────────────────────────────────────────────────────
-load_dotenv()
-
-API_ID        = int(os.getenv("API_ID", "0"))
-API_HASH      = os.getenv("API_HASH", "")
-PHONE_NUMBER  = os.getenv("PHONE_NUMBER", "")
-BOT_TOKEN     = os.getenv("BOT_TOKEN", "")          # from @BotFather
-ADMIN_ID      = int(os.getenv("ADMIN_ID", "0"))     # your Telegram user ID
+# ── Read environment variables (Railway sets these automatically) ─────────────
+API_ID        = int(os.environ.get("API_ID", 0))
+API_HASH      = os.environ.get("API_HASH", "")
+PHONE_NUMBER  = os.environ.get("PHONE_NUMBER", "")
+BOT_TOKEN     = os.environ.get("BOT_TOKEN", "")
+ADMIN_ID      = int(os.environ.get("ADMIN_ID", 0))
 CONFIG_FILE   = Path("config.json")
+
+# ── Validate before starting ──────────────────────────────────────────────────
+missing = [k for k, v in {
+    "API_ID": API_ID, "API_HASH": API_HASH,
+    "PHONE_NUMBER": PHONE_NUMBER, "BOT_TOKEN": BOT_TOKEN, "ADMIN_ID": ADMIN_ID
+}.items() if not v]
+
+if missing:
+    raise SystemExit(f"❌ Missing environment variables: {', '.join(missing)}\n"
+                     f"Go to Railway → Variables tab and add them.")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -55,7 +47,7 @@ log = logging.getLogger("forwarder")
 
 # ── Config helpers ────────────────────────────────────────────────────────────
 DEFAULT_CONFIG = {
-    "pairs": [],          # [{id, source, dest, active, filters, delay, prefix, suffix}]
+    "pairs": [],
     "affiliate_url": "",
     "affiliate_key": "",
 }
@@ -104,15 +96,15 @@ def passes_filter(text: str, pair: dict) -> bool:
         return True
     return any(kw in text.lower() for kw in kws)
 
-# ── Telethon (user client) — reads source channels ───────────────────────────
+# ── Telethon user client ──────────────────────────────────────────────────────
 user_client = TelegramClient("user_session", API_ID, API_HASH)
 
 async def start_user_client():
     await user_client.start(phone=PHONE_NUMBER)
     me = await user_client.get_me()
-    log.info("Userbot logged in as %s", me.first_name)
+    log.info("✅ Userbot logged in as %s", me.first_name)
 
-# ── Forward handler (called for every new message in any source) ──────────────
+# ── Forward handler ───────────────────────────────────────────────────────────
 async def handle_new_message(event):
     cfg = load_config()
     msg = event.message
@@ -156,8 +148,7 @@ async def handle_new_message(event):
             except Exception as e:
                 log.error("❌ Forward failed [pair %s]: %s", pair["id"], e)
 
-# ── Bot (PTB) — settings interface ────────────────────────────────────────────
-# Conversation states
+# ── Conversation states ───────────────────────────────────────────────────────
 (
     ASK_SOURCE, ASK_DEST, ASK_FILTER, ASK_DELAY,
     ASK_PREFIX, ASK_SUFFIX, EDIT_PAIR,
@@ -172,21 +163,21 @@ def admin_only(func):
         return await func(update, ctx)
     return wrapper
 
-# ─── /start ──────────────────────────────────────────────────────────────────
+# ── /start ────────────────────────────────────────────────────────────────────
 @admin_only
 async def cmd_start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    text = (
+    await update.message.reply_text(
         "🤖 *Auto Forwarder Bot* — Free & Unlimited\n\n"
         "Commands:\n"
         "/addpair — Add a new source→dest forwarding pair\n"
         "/pairs — List & manage all pairs\n"
         "/affiliate — Set affiliate link converter\n"
         "/status — Show bot status\n"
-        "/help — Show this message"
+        "/help — Show this message",
+        parse_mode="Markdown"
     )
-    await update.message.reply_text(text, parse_mode="Markdown")
 
-# ─── /addpair conversation ────────────────────────────────────────────────────
+# ── /addpair ──────────────────────────────────────────────────────────────────
 @admin_only
 async def cmd_addpair(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -220,7 +211,7 @@ async def got_filter(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     val = update.message.text.strip()
     ctx.user_data["new_filter"] = "" if val == "-" else val
     await update.message.reply_text(
-        "⏱ *Step 4/4* — Forward delay in seconds (optional).\n"
+        "⏱ *Step 4/4* — Forward delay in seconds.\n"
         "Send `0` for instant forwarding.",
         parse_mode="Markdown"
     )
@@ -245,10 +236,7 @@ async def got_delay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     }
     cfg["pairs"].append(pair)
     save_config(cfg)
-
-    # Register listener
     register_listener(pair["source"])
-
     await update.message.reply_text(
         f"✅ *Pair #{new_id} created!*\n\n"
         f"Source: `{pair['source']}`\n"
@@ -260,14 +248,13 @@ async def got_delay(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     )
     return ConversationHandler.END
 
-# ─── /pairs — list & toggle ───────────────────────────────────────────────────
+# ── /pairs ────────────────────────────────────────────────────────────────────
 @admin_only
 async def cmd_pairs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cfg = load_config()
     if not cfg["pairs"]:
         await update.message.reply_text("No pairs configured. Use /addpair to add one.")
         return
-
     for pair in cfg["pairs"]:
         status = "🟢 Active" if pair["active"] else "🔴 Paused"
         kb = InlineKeyboardMarkup([[
@@ -277,21 +264,20 @@ async def cmd_pairs(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             ),
             InlineKeyboardButton("🗑 Delete", callback_data=f"delete_{pair['id']}"),
         ]])
-        text = (
+        await update.message.reply_text(
             f"*Pair #{pair['id']}* — {status}\n"
             f"📥 `{pair['source']}`\n"
             f"📤 `{pair['dest']}`\n"
             f"🔍 Filter: `{pair['filters'] or 'all'}`\n"
-            f"⏱ Delay: `{pair.get('delay', 0)}s`"
+            f"⏱ Delay: `{pair.get('delay', 0)}s`",
+            parse_mode="Markdown", reply_markup=kb
         )
-        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
     cfg = load_config()
-
     if data.startswith("toggle_"):
         pid = data.split("_")[1]
         for p in cfg["pairs"]:
@@ -299,18 +285,15 @@ async def callback_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                 p["active"] = not p["active"]
                 save_config(cfg)
                 state = "🟢 Active" if p["active"] else "🔴 Paused"
-                await query.edit_message_text(
-                    f"Pair #{pid} is now *{state}*", parse_mode="Markdown"
-                )
+                await query.edit_message_text(f"Pair #{pid} is now *{state}*", parse_mode="Markdown")
                 return
-
     if data.startswith("delete_"):
         pid = data.split("_")[1]
         cfg["pairs"] = [p for p in cfg["pairs"] if p["id"] != pid]
         save_config(cfg)
         await query.edit_message_text(f"🗑 Pair #{pid} deleted.")
 
-# ─── /affiliate ────────────────────────────────────────────────────────────────
+# ── /affiliate ────────────────────────────────────────────────────────────────
 @admin_only
 async def cmd_affiliate(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cfg = load_config()
@@ -326,12 +309,10 @@ async def got_aff_url(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     val = update.message.text.strip()
     cfg = load_config()
     cfg["affiliate_url"] = "" if val == "-" else val
+    save_config(cfg)
     if val == "-":
-        save_config(cfg)
         await update.message.reply_text("✅ Affiliate converter disabled.")
         return ConversationHandler.END
-    save_config(cfg)
-    ctx.user_data["aff_url"] = val
     await update.message.reply_text("Send your API key (or `-` if not needed):")
     return ASK_AFF_KEY
 
@@ -343,7 +324,7 @@ async def got_aff_key(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("✅ Affiliate converter configured!")
     return ConversationHandler.END
 
-# ─── /status ──────────────────────────────────────────────────────────────────
+# ── /status ───────────────────────────────────────────────────────────────────
 @admin_only
 async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     cfg = load_config()
@@ -363,17 +344,14 @@ async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Cancelled.")
     return ConversationHandler.END
 
-# ── Register Telethon listeners ───────────────────────────────────────────────
+# ── Telethon listeners ────────────────────────────────────────────────────────
 _registered_sources: set = set()
 
 def register_listener(source: str):
     if source in _registered_sources:
         return
     _registered_sources.add(source)
-    user_client.add_event_handler(
-        handle_new_message,
-        events.NewMessage(chats=source)
-    )
+    user_client.add_event_handler(handle_new_message, events.NewMessage(chats=source))
     log.info("Registered listener for %s", source)
 
 def register_all_listeners():
@@ -384,14 +362,13 @@ def register_all_listeners():
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 async def main():
-    # Start userbot
+    log.info("🚀 Starting Auto Forwarder Bot...")
     await start_user_client()
     register_all_listeners()
 
-    # Build PTB bot
     app = Application.builder().token(BOT_TOKEN).build()
 
-    add_pair_conv = ConversationHandler(
+    app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("addpair", cmd_addpair)],
         states={
             ASK_SOURCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_source)],
@@ -400,33 +377,28 @@ async def main():
             ASK_DELAY:  [MessageHandler(filters.TEXT & ~filters.COMMAND, got_delay)],
         },
         fallbacks=[CommandHandler("cancel", cmd_cancel)],
-    )
+    ))
 
-    aff_conv = ConversationHandler(
+    app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("affiliate", cmd_affiliate)],
         states={
             ASK_AFF_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_aff_url)],
             ASK_AFF_KEY: [MessageHandler(filters.TEXT & ~filters.COMMAND, got_aff_key)],
         },
         fallbacks=[CommandHandler("cancel", cmd_cancel)],
-    )
+    ))
 
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help",  cmd_start))
-    app.add_handler(CommandHandler("pairs", cmd_pairs))
+    app.add_handler(CommandHandler("start",  cmd_start))
+    app.add_handler(CommandHandler("help",   cmd_start))
+    app.add_handler(CommandHandler("pairs",  cmd_pairs))
     app.add_handler(CommandHandler("status", cmd_status))
-    app.add_handler(add_pair_conv)
-    app.add_handler(aff_conv)
     app.add_handler(CallbackQueryHandler(callback_handler))
 
-    log.info("🚀 Bot is running. Send /start to your bot on Telegram.")
+    log.info("✅ Bot is running! Open Telegram and send /start to your bot.")
     await app.initialize()
     await app.start()
     await app.updater.start_polling()
-
-    # Keep both running
     await user_client.run_until_disconnected()
-
     await app.updater.stop()
     await app.stop()
     await app.shutdown()
